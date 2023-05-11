@@ -19,7 +19,8 @@
 #include <rcutils/process.h>
 #include <rcutils/snprintf.h>
 #include <rcutils/time.h>
-
+#include <iomanip>
+#include <ctime>
 #include <cerrno>
 #include <cinttypes>
 #include <memory>
@@ -29,11 +30,11 @@
 
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/basic_file_sink.h"
-
+#include "spdlog/sinks/rotating_file_sink.h"
 #include "rcl_logging_interface/rcl_logging_interface.h"
 
 static std::mutex g_logger_mutex;
-static std::unique_ptr<spdlog::logger> g_root_logger = nullptr;
+static std::shared_ptr<spdlog::logger> g_root_logger = nullptr;
 
 static spdlog::level::level_enum map_external_log_level_to_library_level(int external_level)
 {
@@ -114,12 +115,16 @@ rcl_logging_ret_t rcl_logging_external_initialize(
       RCUTILS_SET_ERROR_MSG("Failed to get the executable name");
       return RCL_LOGGING_RET_ERROR;
     }
+    std::time_t secsSinceEpoch= ms_since_epoch/1000;
 
     char name_buffer[4096] = {0};
+    std::string datetime(100,0);
+    datetime.resize(std::strftime(&datetime[0], datetime.size(),
+                                  "%Y%m%d_%H%M%S", std::localtime(&secsSinceEpoch)));
     int print_ret = rcutils_snprintf(
       name_buffer, sizeof(name_buffer),
-      "%s/%s_%i_%" PRId64 ".log", logdir,
-      basec, rcutils_get_pid(), ms_since_epoch);
+      "%s/%s_%i_%s.log", logdir,
+      basec, rcutils_get_pid(), datetime.c_str());
     allocator.deallocate(logdir, allocator.state);
     allocator.deallocate(basec, allocator.state);
     if (print_ret < 0) {
@@ -127,10 +132,12 @@ rcl_logging_ret_t rcl_logging_external_initialize(
       return RCL_LOGGING_RET_ERROR;
     }
 
-    auto sink = std::make_unique<spdlog::sinks::basic_file_sink_mt>(name_buffer, false);
-    g_root_logger = std::make_unique<spdlog::logger>("root", std::move(sink));
-
-    g_root_logger->set_pattern("%v");
+    auto sink = std::make_unique<spdlog::sinks::rotating_file_sink_mt>(name_buffer, 1048576 * 10, 2);
+    g_root_logger = std::make_shared<spdlog::logger>("root", std::move(sink));
+    spdlog::flush_every(std::chrono::seconds(8));
+//    g_root_logger->flush_on(spdlog::level::err);
+    spdlog::register_logger(g_root_logger);
+    g_root_logger->set_pattern("[%H:%M:%S]%v");
   }
 
   return RCL_LOGGING_RET_OK;
